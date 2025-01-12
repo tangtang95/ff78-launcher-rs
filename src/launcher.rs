@@ -159,7 +159,7 @@ pub fn send_user_doc_dir(ctx: &Context, launcher_ctx: &mut LauncherContext) -> R
 }
 
 pub fn send_install_dir(ctx: &Context, launcher_ctx: &mut LauncherContext) -> Result<()> {
-    let cwd = std::fs::canonicalize("./")?;
+    let cwd = std::path::absolute(".")?;
     let payload: Vec<u16> = cwd.into_os_string().encode_wide().collect();
     let mut bytes = Vec::<u8>::new();
     bytes.extend_from_slice(
@@ -305,16 +305,28 @@ pub fn write_ffvideo(ctx: &Context) -> Result<()> {
     };
     let filepath = get_game_metadata_path(ctx)? + "\\" + filename;
     let mut file = std::fs::File::create(filepath)?;
-    file.write_all(&ctx.config.window_width.to_le_bytes())?;
-    file.write_all(&ctx.config.window_height.to_le_bytes())?;
-    file.write_all(&ctx.config.refresh_rate.to_le_bytes())?;
-    file.write_all(&u32::from(ctx.config.fullscreen).to_le_bytes())?;
-    file.write_all(&0u32.to_le_bytes())?;
-    file.write_all(&u32::from(ctx.config.keep_aspect_ratio).to_le_bytes())?;
-    file.write_all(&u32::from(ctx.config.enable_linear_filtering).to_le_bytes())?;
-    file.write_all(&u32::from(ctx.config.original_mode).to_le_bytes())?;
-    if let GameType::FF8 = ctx.game_to_launch {
-        file.write_all(&u32::from(ctx.config.pause_game_on_background).to_le_bytes())?;
+    match ctx.game_to_launch {
+        GameType::FF7(_) => {
+            file.write_all(&ctx.config.window_width.to_be_bytes())?;
+            file.write_all(&ctx.config.window_height.to_be_bytes())?;
+            file.write_all(&ctx.config.refresh_rate.to_be_bytes())?;
+            file.write_all(&u32::from(ctx.config.fullscreen).to_be_bytes())?;
+            file.write_all(&0u32.to_be_bytes())?;
+            file.write_all(&u32::from(ctx.config.keep_aspect_ratio).to_be_bytes())?;
+            file.write_all(&u32::from(ctx.config.enable_linear_filtering).to_be_bytes())?;
+            file.write_all(&u32::from(ctx.config.original_mode).to_be_bytes())?;
+        }
+        GameType::FF8 => {
+            file.write_all(&ctx.config.window_width.to_le_bytes())?;
+            file.write_all(&ctx.config.window_height.to_le_bytes())?;
+            file.write_all(&ctx.config.refresh_rate.to_le_bytes())?;
+            file.write_all(&u32::from(ctx.config.fullscreen).to_le_bytes())?;
+            file.write_all(&0u32.to_le_bytes())?;
+            file.write_all(&u32::from(ctx.config.keep_aspect_ratio).to_le_bytes())?;
+            file.write_all(&u32::from(ctx.config.enable_linear_filtering).to_le_bytes())?;
+            file.write_all(&u32::from(ctx.config.original_mode).to_le_bytes())?;
+            file.write_all(&u32::from(ctx.config.pause_game_on_background).to_le_bytes())?;
+        }
     }
     Ok(())
 }
