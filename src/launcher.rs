@@ -51,7 +51,6 @@ pub fn send_locale_data_dir(ctx: &Context, launcher_ctx: &mut LauncherContext) {
     bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     bytes.append(&mut payload.iter().flat_map(|b| b.to_le_bytes()).collect());
     unsafe {
-        // NOTE: Safe since single threaded
         std::ptr::copy(
             bytes.as_ptr(),
             launcher_ctx.launcher_memory_part as _,
@@ -107,7 +106,6 @@ pub fn send_user_save_dir(ctx: &Context, launcher_ctx: &mut LauncherContext) -> 
     bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     bytes.append(&mut payload.iter().flat_map(|b| b.to_le_bytes()).collect());
     unsafe {
-        // NOTE: Safe since single threaded
         std::ptr::copy(
             bytes.as_ptr(),
             launcher_ctx.launcher_memory_part as _,
@@ -140,7 +138,6 @@ pub fn send_user_doc_dir(ctx: &Context, launcher_ctx: &mut LauncherContext) -> R
     bytes.append(&mut payload.iter().flat_map(|b| b.to_le_bytes()).collect());
     bytes.push(0);
     unsafe {
-        // NOTE: Safe since single threaded
         std::ptr::copy(
             bytes.as_ptr(),
             launcher_ctx.launcher_memory_part as _,
@@ -173,7 +170,6 @@ pub fn send_install_dir(ctx: &Context, launcher_ctx: &mut LauncherContext) -> Re
     bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     bytes.append(&mut payload.iter().flat_map(|b| b.to_le_bytes()).collect());
     unsafe {
-        // NOTE: Safe since single threaded
         std::ptr::copy(
             bytes.as_ptr(),
             launcher_ctx.launcher_memory_part as _,
@@ -205,7 +201,6 @@ pub fn send_game_version(ctx: &Context, launcher_ctx: &mut LauncherContext) {
     bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     bytes.append(&mut payload.iter().flat_map(|b| b.to_le_bytes()).collect());
     unsafe {
-        // NOTE: Safe since single threaded
         std::ptr::copy(
             bytes.as_ptr(),
             launcher_ctx.launcher_memory_part as _,
@@ -236,7 +231,6 @@ pub fn send_disable_cloud(ctx: &Context, launcher_ctx: &mut LauncherContext) {
         .to_le_bytes(),
     );
     unsafe {
-        // NOTE: Safe since single threaded
         std::ptr::copy(
             launcher_game_part.as_ptr(),
             launcher_ctx.launcher_memory_part as _,
@@ -263,7 +257,6 @@ pub fn send_bg_pause_enabled(ctx: &Context, launcher_ctx: &mut LauncherContext) 
     );
     launcher_game_part.extend_from_slice(&1u32.to_le_bytes());
     unsafe {
-        // NOTE: Safe since single threaded
         std::ptr::copy(
             launcher_game_part.as_ptr(),
             launcher_ctx.launcher_memory_part as _,
@@ -286,7 +279,6 @@ pub fn send_launcher_completed(ctx: &Context, launcher_ctx: &mut LauncherContext
         .to_le_bytes(),
     );
     unsafe {
-        // NOTE: Safe since single threaded
         std::ptr::copy(
             launcher_game_part.as_ptr(),
             launcher_ctx.launcher_memory_part as _,

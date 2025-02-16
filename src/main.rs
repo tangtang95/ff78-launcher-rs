@@ -15,6 +15,7 @@ use std::{
     ffi::{c_void, CString},
     os::windows::fs::MetadataExt,
     process::Command,
+    sync::mpsc::{Receiver, TryRecvError},
 };
 use windows::{
     core::{s, PCSTR},
@@ -28,10 +29,7 @@ use windows::{
                 CreateFileMappingA, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
                 PAGE_READWRITE,
             },
-            Threading::{
-                CreateSemaphoreA, CreateThread, ReleaseSemaphore, WaitForSingleObject, INFINITE,
-                THREAD_CREATION_FLAGS,
-            },
+            Threading::{CreateSemaphoreA, ReleaseSemaphore, WaitForSingleObject, INFINITE},
         },
         UI::WindowsAndMessaging::{MessageBoxA, MB_ICONERROR, MB_OK},
     },
@@ -55,6 +53,11 @@ const PROCESSES: [&str; 11] = [
     "ff8_ja.exe",
 ];
 const AF3DN_FILE: &str = "AF3DN.P";
+const GAME_CAN_READ_MSG_SEM: &str = "_gameCanReadMsgSem";
+const GAME_DID_READ_MSG_SEM: &str = "_gameDidReadMsgSem";
+const LAUNCHER_CAN_READ_MSG_SEM: &str = "_launcherCanReadMsgSem";
+const LAUNCHER_DID_READ_MSG_SEM: &str = "_launcherDidReadMsgSem";
+const SHARED_MEMORY_WITH_LAUNCHER_NAME: &str = "_sharedMemoryWithLauncher";
 
 static mut HAD_EXCEPTION: bool = false;
 
@@ -83,18 +86,6 @@ pub struct LauncherContext {
     game_can_read_sem: HANDLE,
     game_did_read_sem: HANDLE,
     launcher_memory_part: *mut c_void,
-}
-
-unsafe extern "system" fn process_game_messages(launcher_ctx: *mut core::ffi::c_void) -> u32 {
-    log::info!("Starting game message queue thread...");
-    let (launcher_can_read_sem, launcher_did_read_sem) =
-        std::ptr::read(launcher_ctx as *mut (HANDLE, HANDLE));
-    loop {
-        log::info!("game message thread waiting for launcherCanReadSem semaphore...");
-        WaitForSingleObject(launcher_can_read_sem, INFINITE);
-        log::info!("game message thread releasing launcherDidReadSem semaphore...");
-        _ = ReleaseSemaphore(launcher_did_read_sem, 1, None);
-    }
 }
 
 fn main() -> Result<()> {
@@ -197,69 +188,71 @@ fn launch_process() -> Result<()> {
                 GameType::FF8 => "ff8",
             },
         };
-        let game_can_read_name = CString::new(name_prefix.to_owned() + "_gameCanReadMsgSem")?;
-        let game_did_read_name = CString::new(name_prefix.to_owned() + "_gameDidReadMsgSem")?;
-        let launcher_can_read_name =
-            CString::new(name_prefix.to_owned() + "_launcherCanReadMsgSem")?;
-        let launcher_did_read_name =
-            CString::new(name_prefix.to_owned() + "_launcherDidReadMsgSem")?;
+        let game_can_read_name = CString::new(name_prefix.to_owned() + GAME_CAN_READ_MSG_SEM)?;
+        let game_did_read_name = CString::new(name_prefix.to_owned() + GAME_DID_READ_MSG_SEM)?;
         let shared_memory_name =
-            CString::new(name_prefix.to_owned() + "_sharedMemoryWithLauncher")?;
-        unsafe {
-            let game_can_read_sem =
-                CreateSemaphoreA(None, 0, 1, PCSTR(game_can_read_name.as_ptr() as _))?;
-            let game_did_read_sem =
-                CreateSemaphoreA(None, 0, 1, PCSTR(game_did_read_name.as_ptr() as _))?;
-            let launcher_can_read_sem =
-                CreateSemaphoreA(None, 0, 1, PCSTR(launcher_can_read_name.as_ptr() as _))?;
-            let launcher_did_read_sem =
-                CreateSemaphoreA(None, 0, 1, PCSTR(launcher_did_read_name.as_ptr() as _))?;
-            let shared_memory = CreateFileMappingA(
+            CString::new(name_prefix.to_owned() + SHARED_MEMORY_WITH_LAUNCHER_NAME)?;
+        let game_can_read_sem =
+            unsafe { CreateSemaphoreA(None, 0, 1, PCSTR(game_can_read_name.as_ptr() as _))? };
+        let game_did_read_sem =
+            unsafe { CreateSemaphoreA(None, 0, 1, PCSTR(game_did_read_name.as_ptr() as _))? };
+        let shared_memory = unsafe {
+            CreateFileMappingA(
                 INVALID_HANDLE_VALUE,
                 None,
                 PAGE_READWRITE,
                 0,
                 0x20000,
                 PCSTR(shared_memory_name.as_ptr() as _),
-            )?;
-            let view_shared_memory = MapViewOfFile(shared_memory, FILE_MAP_ALL_ACCESS, 0, 0, 0);
-            let launcher_memory_part = view_shared_memory.Value.offset(0x10000);
-            let mut launcher_context = LauncherContext {
-                game_can_read_sem,
-                game_did_read_sem,
-                launcher_memory_part,
-            };
+            )?
+        };
+        let view_shared_memory =
+            unsafe { MapViewOfFile(shared_memory, FILE_MAP_ALL_ACCESS, 0, 0, 0) };
+        let launcher_memory_part = unsafe { view_shared_memory.Value.offset(0x10000) };
+        let mut launcher_context = LauncherContext {
+            game_can_read_sem,
+            game_did_read_sem,
+            launcher_memory_part,
+        };
 
-            // NOTE: launcher_context will have two mutable references
-            let process_game_messages_thread = CreateThread(
-                None,
-                0,
-                Some(process_game_messages),
-                Some(std::ptr::from_mut(&mut (launcher_can_read_sem, launcher_did_read_sem)) as _),
-                THREAD_CREATION_FLAGS::default(),
-                None,
-            )?;
-            let mut output = Command::new(process_filename).spawn()?;
-            log::info!("Process launched (process_id: {})!", output.id());
+        let (thread_kill_tx, thread_kill_rx) = std::sync::mpsc::channel::<()>();
+        let process_game_messages_thread = std::thread::spawn(move || {
+            handle_game_messages_thread(name_prefix, thread_kill_rx).unwrap();
+        });
 
-            send_locale_data_dir(&ctx, &mut launcher_context);
-            send_user_save_dir(&ctx, &mut launcher_context)?;
-            send_user_doc_dir(&ctx, &mut launcher_context)?;
-            send_install_dir(&ctx, &mut launcher_context)?;
-            send_game_version(&ctx, &mut launcher_context);
-            send_disable_cloud(&ctx, &mut launcher_context);
-            send_bg_pause_enabled(&ctx, &mut launcher_context);
-            send_launcher_completed(&ctx, &mut launcher_context);
+        let mut output = Command::new(process_filename).spawn()?;
+        log::info!("Process launched (process_id: {})!", output.id());
 
-            _ = output.wait()?;
+        send_locale_data_dir(&ctx, &mut launcher_context);
+        send_user_save_dir(&ctx, &mut launcher_context)?;
+        send_user_doc_dir(&ctx, &mut launcher_context)?;
+        send_install_dir(&ctx, &mut launcher_context)?;
+        send_game_version(&ctx, &mut launcher_context);
+        send_disable_cloud(&ctx, &mut launcher_context);
+        send_bg_pause_enabled(&ctx, &mut launcher_context);
+        send_launcher_completed(&ctx, &mut launcher_context);
 
-            _ = CloseHandle(process_game_messages_thread);
+        _ = output.wait()?;
+        thread_kill_tx.send(())?;
 
+        // Release launcherCanReadSem for game process thread
+        let launcher_can_read_name =
+            CString::new(name_prefix.to_owned() + LAUNCHER_CAN_READ_MSG_SEM)?;
+        let launcher_can_read_sem =
+            unsafe { CreateSemaphoreA(None, 0, 1, PCSTR(launcher_can_read_name.as_ptr() as _))? };
+        unsafe {
+            ReleaseSemaphore(launcher_can_read_sem, 1, None)?;
+        }
+
+        process_game_messages_thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("Process game thread join failed!"))?;
+
+        unsafe {
             _ = UnmapViewOfFile(view_shared_memory);
             _ = CloseHandle(shared_memory);
             _ = CloseHandle(game_did_read_sem);
             _ = CloseHandle(game_can_read_sem);
-            _ = CloseHandle(launcher_did_read_sem);
             _ = CloseHandle(launcher_can_read_sem);
         }
     } else {
@@ -273,6 +266,38 @@ fn launch_process() -> Result<()> {
         _ = output.wait()?;
     }
 
+    Ok(())
+}
+
+fn handle_game_messages_thread(name_prefix: &str, thread_kill_rx: Receiver<()>) -> Result<()> {
+    log::info!("Starting game message queue thread...");
+
+    let launcher_can_read_name = CString::new(name_prefix.to_owned() + LAUNCHER_CAN_READ_MSG_SEM)?;
+    let launcher_did_read_name = CString::new(name_prefix.to_owned() + LAUNCHER_DID_READ_MSG_SEM)?;
+
+    let launcher_can_read_sem =
+        unsafe { CreateSemaphoreA(None, 0, 1, PCSTR(launcher_can_read_name.as_ptr() as _))? };
+    let launcher_did_read_sem =
+        unsafe { CreateSemaphoreA(None, 0, 1, PCSTR(launcher_did_read_name.as_ptr() as _))? };
+
+    loop {
+        match thread_kill_rx.try_recv() {
+            Ok(_) | Err(TryRecvError::Disconnected) => {
+                break;
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+
+        log::info!("Game message thread waiting for launcherCanReadSem semaphore...");
+        unsafe { WaitForSingleObject(launcher_can_read_sem, INFINITE) };
+        log::info!("Game message thread releasing launcherDidReadSem semaphore...");
+        _ = unsafe { ReleaseSemaphore(launcher_did_read_sem, 1, None) };
+    }
+    unsafe {
+        _ = CloseHandle(launcher_did_read_sem);
+        _ = CloseHandle(launcher_can_read_sem);
+    }
+    log::info!("Game message queue thread terminated!");
     Ok(())
 }
 
